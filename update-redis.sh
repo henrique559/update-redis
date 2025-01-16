@@ -152,6 +152,10 @@ download_binaries(){
       echo "Download feito com sucesso!" || \
       { echo "Falha no download"; exit 1; }
   fi
+
+  # Descompactando arquivo
+  tar xfv ./redis-*.tar.gz
+  rm ./redis-*.tar.gz
   return 0;
 }
 
@@ -159,7 +163,10 @@ compile_binaries(){
 
   # Verificando se não existe uma pasta chamada download, se não tiver, cria uma. 
   download_binaries
-  tar xfv download/*.tar.gz
+
+  # Dando cd no diretório dos binarios e compilando
+  cd ./redis-*
+  make  
 
 }
 
