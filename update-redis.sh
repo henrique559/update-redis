@@ -1,20 +1,21 @@
 #!/bin/bash
 # Projeto: Update Redis
 # Descrição: Esse projeto tem como objetivo automatizar o update da versão 6.0.9 para 7.2 das instâncias de Redis dos ambientes Bradesco
-# Versão: v1.0
+# Versão: v1.2
 # Log:
 # - v1.0: Criação do esquema do algoritmo somente para o redis-server no contexto de um container dockerizado
-# - v1.1: Perguntar por paths de onde está instalado e o path dos confs/bin + downloads e escolher versao
-# > ./script.sh --version=7.2 --backup=/backup --bin=/usr/local/bin --conf=/etc/redis --download=ftp://blablabla.net
+# - v1.1: Adicionado opções nos parâmetros para modificar o estado do script
+# - v1.2: Compilação e instalação dos binários 
 # Autor: Pedro Henrique - Extractta
 
 # VARIAVEIS
-PID_REDIS=$(ps aux | grep '[r]edis-server' | head -n 1 | awk '{print $2}')
-URL_DOWNLOAD="https://download.redis.io/releases"
-BACKUP_PATH="$(pwd)/backup"
-CONF_PATH="/etc/redis/"
-BIN_PATH="/usr/local/bin/"
-REDIS_VERSION="7.2.7"
+#
+URL_DOWNLOAD="https://download.redis.io/releases" # Endereço de download
+BACKUP_PATH="$(pwd)/backup" # Onde será feito o backup
+CONF_PATH="/etc/redis/" # O path dos confs do redis
+BIN_PATH="/usr/local/bin/" # O Path dos binarios do redis
+DEFAULT_COMPILED_PATH="$(pwd)/bin"
+REDIS_VERSION="7.2.7" # Versão desejada para atualizar o redis
 HELP="usage: ./update-redis.sh
 \n> version: -v [version]
 \n> backup-path: -B /my/path/to/backup \t\t (default: $(pwd)/backup/)
@@ -23,6 +24,12 @@ HELP="usage: ./update-redis.sh
 \n> download-url: -d https://downloadsite.test \t (default: https://download.redis.io/releases/)"
 
 # Se não colocar nenhum parametro na linha de comando, printa um help
+#
+
+if [[ $EUID -ne 0 ]]; then
+  echo "por favor, execute o script como root"
+  exit 1
+fi
 
 while getopts "v:b:B:c:d:" opt; do
   # Em versões futuras planejo colocar um verificação dos argumentos para evitar erros.
@@ -33,7 +40,11 @@ while getopts "v:b:B:c:d:" opt; do
       echo -e $HELP
       ;;
     v)
-      
+      if [[ ! "$REDIS_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo "Versão inválida: $REDIS_VERSION"
+        exit 1
+      fi
+
       REDIS_VERSION="$OPTARG"
       ;;
     b)
@@ -49,27 +60,19 @@ while getopts "v:b:B:c:d:" opt; do
       URL_DOWNLOAD="$OPTARG"
       ;;
     \?)
-      echo "Opção inválida: -$OPTARG" >&2
       echo -e $HELP
       exit 1
       ;;
     :)
-      echo "Opção -$OPTARG requer um argumento." >&2
       echo -e $HELP
       exit 1
       ;;
   esac
 done
 
-# Chamada de funções
-
-
-
-
-
-# Roadmap:
 # 1 - Parar os serviços
 parar_servicos() {
+  PID_REDIS=$(ps aux | grep '[r]edis-server' | head -n 1 | awk '{print $2}')  # PID DO SERVIÇO DO REDIS
   # A POC será testada em um container docker sem systemctl, portanto, a única forma de 
   # parar um serviço será matando o processo do redis-server.
   # Em futuras versões, será usado o systemctl ou outro
@@ -82,26 +85,18 @@ parar_servicos() {
   echo "PID do redis-server encontrado: $PID_REDIS "
 
   # Finalizando o serviço do redis
-  sudo kill -9 "$PID_REDIS" && echo "Processo redis-server finalizado com sucesso" || echo "Falha ao finalizar o redis server"
+  kill -9 "$PID_REDIS" && echo "Processo redis-server finalizado com sucesso" || echo "Falha ao finalizar o redis server"
   return 0
 }
 
 # 2 - Verificar a existência dos binários e realizar o backup em tar.gz
 backup() {
+  echo "Parando serviços do redis"
   parar_servicos
-  # Verificando o status code da função "parar_serviços", caso seja diferente de 0 (sucesso), retorne 1
-  if [[ $? != 0 ]]; then
-    return 1; 
-  fi
+  [[ $? != 0 ]] && return 1
 
-  # Criando a pasta no diretório atual, futuramente colocar em alguma pasta da raiz.
-  if [[ -d $BACKUP_PATH ]]; then
-    echo "$BACKUP_PATH já existe"
-  else # Caso não exista, cria uma pasta
-    echo "Criando pasta em $BACKUP_PATH"
-    mkdir $BACKUP_PATH
-  fi
-
+  # Chamada das funções de backup
+  [[ -d $BACKUP_PATH ]] || mkdir -p $BACKUP_PATH
   backup_bin 
   backup_conf
 }
@@ -109,10 +104,9 @@ backup() {
 backup_bin() {
   echo "Inicializando o backup dos binarios"
   sleep 3
-
   # Nesse comando a gente procura no diretório "/usr/bin" os arquivos que são do tipo "file" e começando com "redis-", depois esses arquivos são 
   # compactados e enviados para o $BACKUP_PATH 
-  find /usr/bin -type f -iname 'redis-*' -print 2> /dev/null | \
+  find $BIN_PATH -type f -iname 'redis-*' -print 2> /dev/null | \
     tar -czf "$BACKUP_PATH/backup_bin.tar.gz" --files-from - && \
     echo "Backup dos arquivos binarios realizado com sucesso em $BACKUP_PATH" || \
     { echo "Não foi possível realizar o backup dos arquivos binarios"; return 1; } # Caso dê errado, sai do programa dando status code 1
@@ -127,7 +121,7 @@ backup_conf(){
 
   # Nesse comando a gente procura no diretório "/etc" os arquivos que são do tipo "file" e começando com "redis/sentinel.conf", depois esses arquivos são 
   # compactados e enviados para o $BACKUP_PATH 
-  find /etc -type f -regex '.*/\(redis\|sentinel\)\.conf' -print 2>/dev/null | \
+  find $CONF_PATH -type f -regex '.*/\(redis\|sentinel\)\.conf' -print 2>/dev/null | \
     tar -czf "$BACKUP_PATH/backup_conf.tar.gz" --files-from - && \
 
     echo "Backup dos arquivos de configuração realizado com sucesso em $BACKUP_PATH" || \
@@ -138,47 +132,83 @@ backup_conf(){
 # 4 - Dar GET nos binários atualizados em um servidor FTP 
 
 download_binaries(){
-  # Tenta fazer download primeiro no yum, se não der certo, vai para baixar os binarios.
-  # TODO: Download pelo YUM
-
   # Faz download do redis no URL e versão padrão e com 
   if [[ $URL_DOWNLOAD == "https://download.redis.io/releases" ]]; then
     wget -O ./redis-$REDIS_VERSION.tar.gz $URL_DOWNLOAD/redis-$REDIS_VERSION.tar.gz && \
       echo "Download feito com sucesso!" || \
       { echo "Falha no download"; exit 1; }
-  else 
-    # Faz download do redis em um link alternativo
-    wget -O ./redis.tar.gz $URL_DOWNLOAD && \
-      echo "Download feito com sucesso!" || \
-      { echo "Falha no download"; exit 1; }
+    else 
+      # Faz download do redis em um link alternativo
+      wget -O ./redis.tar.gz $URL_DOWNLOAD && \
+        echo "Download feito com sucesso!" || \
+        { echo "Falha no download"; exit 1; }
   fi
 
   # Descompactando arquivo
-  tar xfv ./redis-*.tar.gz
-  rm ./redis-*.tar.gz
+  tar xfv ./redis-*.tar.gz && rm ./redis-*.tar.gz
   return 0;
+}
+
+yum_download(){
+  yum install redis-$REDIS_VERSION
+  if [[ $? -eq 1 ]]; then
+    echo "não foi possivel instalar o redis pelo yum, tentando pelo codigo fonte"
+    sleep 3
+    return 1
+  else 
+    return 0
+  fi
 }
 
 compile_binaries(){
 
-  # Verificando se não existe uma pasta chamada download, se não tiver, cria uma. 
-  download_binaries
+  # tenta primeiro fazer o download pelo yum, se não dar certo, vai pra compilação
+  # yum_download
+  # if [[ $? -eq 0 ]]; then 
+  # echo "update realizado pelo yum com sucesso."
+  # return 0;
+  # else
+  # fi
+  # Executa a função de download/compilação, se ocorrer um erro, cancela o update
 
-  # Dando cd no diretório dos binarios e compilando
-  cd ./redis-*
-  make  
+  # Verificando se já existe binarios já compilados
+ if [[ -d $DEFAULT_COMPILED_PATH ]]; then
+    echo "Binários já compilados encontrados."
+
+  else
+    download_binaries
+    mkdir -p $DEFAULT_COMPILED_PATH
+    cd ./redis-* || exit 1
+    make && mv ./src/redis-* $DEFAULT_COMPILED_PATH || { echo "Erro na compilação"; return 1; }
+  fi
+
+  replace_files
+  [[ $? -eq 1 ]] && echo "Erro ao substituir os arquivos." && exit 1
+
+  return 0
 
 }
 
-compile_binaries
+replace_files(){
+  # Excluindo todos os binarios do redis
+  echo "Substituindo os binarios e os confs"
+  rm -f $BIN_PATH/redis-* $CONF_PATH/redis-* $CONF_PATH/sentinel-*
+  cp -r $DEFAULT_COMPILED_PATH/* $BIN_PATH
+      tar xfv "$BACKUP_PATH/backup_conf.tar.gz" -C $CONF_PATH
+ }
 
-# 4.1 - (OPT) Fazer a compilação dos binários caso seja necessário
-# pergunta path, se for nulo -> yum
+update_redis(){
+  # Executa a função de backup, se ocorrer um erro, cancela o update
+  backup
+  [[ $? -eq 1 ]] && echo "Erro ao realizar o backup." && exit 1
 
+  compile_binaries
+  [[ $? -eq 1 ]] && echo "Erro ao compilar os binários." && exit 1
 
-# 4 - Fazer a substituição dos binários em versões antigas para versões novas
+  # inicializando o redis novamente
+  service redis start
+  systemctl daemon-reload
+  systemctl start redis
+}
 
-# 5 - Fazer Daemon Reload nos serviços redis (server e sentinel)
-# 6 - Subir os serviços novamente
-
-
+update_redis
